@@ -1,92 +1,97 @@
 # app/main.py
 import joblib
 import os
-import numpy as np
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 
 app = FastAPI(title="Lead Scoring API", version="1.0.0")
 
-# ── Load model ────────────────────────────────────────────────
-model = None
+# ── Load model and encoders ───────────────────────────────────
+model       = None
+encoders    = None
 model_error = None
 
 try:
-    model_path = "model/lead_scorer_v1.pkl"
+    model_path    = "model/lead_scorer_v1.pkl"
+    encoders_path = "model/encoders.pkl"
+
     if not os.path.exists(model_path):
-        model_error = f"Model file not found at: {model_path}"
+        model_error = f"Model file not found: {model_path}"
+        print(f"ERROR: {model_error}")
+    elif not os.path.exists(encoders_path):
+        model_error = f"Encoders file not found: {encoders_path}"
         print(f"ERROR: {model_error}")
     else:
-        model = joblib.load(model_path)
-        print("SUCCESS: Model loaded")
+        model    = joblib.load(model_path)
+        encoders = joblib.load(encoders_path)
+        print("SUCCESS: Model and encoders loaded")
+
 except Exception as e:
     model_error = str(e)
-    print(f"ERROR loading model: {model_error}")
+    print(f"ERROR: {model_error}")
 
-# ── Exact encoding maps — must match what you used in Colab ───
+# ── Exact encoding maps extracted from your encoders.pkl ─────
+
 LEAD_SOURCE_MAP = {
-    "Web": 0,
-    "Phone Inquiry": 1,
-    "Partner Referral": 2,
+    "Other": 0,
+    "Partner Referral": 1,
+    "Phone Inquiry": 2,
     "Purchased List": 3,
-    "Other": 4
+    "Web": 4
 }
 
 INDUSTRY_MAP = {
-    "Technology": 0,
+    "Education": 0,
     "Finance": 1,
     "Healthcare": 2,
-    "Retail": 3,
-    "Manufacturing": 4,
-    "Education": 5,
-    "Other": 6
+    "Manufacturing": 3,
+    "Retail": 4,
+    "Technology": 5
 }
 
 RATING_MAP = {
-    "Hot": 0,
-    "Warm": 1,
-    "Cold": 2
+    "Cold": 0,
+    "Hot": 1,
+    "Warm": 2
 }
 
 STATUS_MAP = {
-    "Open - Not Contacted": 0,
-    "Working - Contacted": 1,
-    "Closed - Not Converted": 2,
-    "Closed - Converted": 3
+    "Closed - Not Converted": 0,
+    "Open - Not Contacted": 1,
+    "Working - Contacted": 2
 }
 
 COUNTRY_MAP = {
-    "USA": 0,
-    "UK": 1,
+    "Australia": 0,
+    "Canada": 1,
     "India": 2,
-    "Canada": 3,
-    "Australia": 4,
-    "Other": 5
+    "United Kingdom": 3,
+    "United States": 4
 }
 
 TITLE_MAP = {
-    "CEO": 0,
-    "CTO": 1,
-    "Manager": 2,
+    "Analyst": 0,
+    "CEO": 1,
+    "CTO": 2,
     "Director": 3,
-    "VP": 4,
-    "Other": 5
+    "Engineer": 4,
+    "Manager": 5
 }
 
 def encode(mapping: dict, value: str) -> int:
-    # If value not found in map, return last index + 1
-    return mapping.get(value, len(mapping))
+    # Unknown value → return 0 as safe fallback
+    return mapping.get(value, 0)
 
-# ── Request / Response schemas ────────────────────────────────
+# ── Schemas ───────────────────────────────────────────────────
 class LeadRequest(BaseModel):
     lead_id:             str
     lead_source:         Optional[str]   = "Other"
-    industry:            Optional[str]   = "Other"
+    industry:            Optional[str]   = "Education"
     rating:              Optional[str]   = "Warm"
     status:              Optional[str]   = "Open - Not Contacted"
-    country:             Optional[str]   = "Other"
-    title:               Optional[str]   = "Other"
+    country:             Optional[str]   = "India"
+    title:               Optional[str]   = "Manager"
     annual_revenue:      Optional[float] = 0.0
     number_of_employees: Optional[int]   = 0
 
@@ -101,22 +106,20 @@ class ScoreResponse(BaseModel):
 def health():
     return {
         "status": "ok" if model is not None else "error",
-        "model_loaded": model is not None,
-        "model_error": model_error
+        "model_loaded":    model    is not None,
+        "encoders_loaded": encoders is not None,
+        "model_error":     model_error
     }
 
 @app.post("/score-lead", response_model=ScoreResponse)
 def score_lead(lead: LeadRequest):
-    if model is None:
+    if model is None or encoders is None:
         raise HTTPException(
             status_code=503,
-            detail=f"Model not loaded. Reason: {model_error}"
+            detail=f"Model or encoders not loaded: {model_error}"
         )
     try:
-        # Build exactly 8 features in exact training order:
-        # LeadSource_enc, Industry_enc, Rating_enc,
-        # Status_enc, Country_enc, Title_enc,
-        # AnnualRevenue, NumberOfEmployees
+        # Exactly 8 features in exact training order
         features = [[
             encode(LEAD_SOURCE_MAP, lead.lead_source),
             encode(INDUSTRY_MAP,    lead.industry),
